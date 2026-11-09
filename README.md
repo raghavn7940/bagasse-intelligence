@@ -1,55 +1,28 @@
-# Sugarcane & Bagasse AI Command Center
+# Bagasse Intelligence V2
 
-A local Streamlit application for exploring the synthetic sugarcane/bagasse dataset, reviewing model performance, tuning classification models, scoring new buyer quotations, and ranking commercial opportunities.
-
-## Included files
-
-- `app.py` — main Streamlit app
-- `data/Sugarcane_Bagasse_Hyperparameter_Tuned.xlsx` — dataset and analysis workbook
-- `models/Sugarcane_Bagasse_Tuned_RF_Model.joblib` — trained Random Forest pipeline
-- `requirements.txt` — Python dependencies
+Streamlit decision-support dashboard for the synthetic sugarcane and bagasse supply-chain project.
 
 ## Run locally
+```bash
+pip install -r requirements.txt
+python -m streamlit run app.py
+```
 
-1. Install Python 3.10 or 3.11.
-2. Extract this folder.
-3. Open Terminal / Command Prompt in this folder.
-4. Install dependencies:
+## Deploy
+Push the contents of this folder to the root of a GitHub repository. In Streamlit Community Cloud:
+- Branch: `main`
+- Main file: `app.py`
 
-   ```bash
-   pip install -r requirements.txt
-   ```
+## Included
+- Executive overview
+- Data quality explorer
+- Model performance diagnostics (explicitly labelled as potentially in-sample)
+- Hyperparameter tuning with chronological holdout and grouped CV
+- Batch buyer quotation prediction
+- Commercial opportunity ranking
+- Supply and market workbook explorer
+- EDA & business drivers page
+- Usage and limitations
 
-5. Start the app:
-
-   ```bash
-   streamlit run app.py
-   ```
-
-6. Open the local address shown in the terminal (normally `http://localhost:8501`).
-
-## Main sections
-
-1. Executive Overview
-2. Data Quality & Explorer
-3. Model Performance
-4. Hyperparameter Tuning
-5. Buyer Prediction
-6. Commercial Prioritisation
-7. Supply & Market Insights
-8. How to Use
-
-## Important model notes
-
-- All supplied data is synthetic and is for learning/prototyping, not evidence of real buyer or mill behaviour.
-- The bundled model predicts `Purchase_Converted`.
-- It expects the feature fields listed in the model bundle. If the uploaded file contains a `Month` date field, the app derives `Year`, `Month_Num`, `Month_Sin` and `Month_Cos`.
-- The reported tuned Random Forest performance in the workbook is based on a chronological holdout and is modest. Do not treat it as production-ready.
-- The packaged model's evaluation on the full loaded dataset is an in-sample diagnostic and must not be reported as unbiased test performance.
-- Hyperparameter tuning uses grouped cross-validation by buyer on the training period and evaluates the untouched later-period holdout.
-- The model does not determine whether a buyer is creditworthy, whether bagasse meets quality specifications, or whether supply is available.
-- Commercial prioritisation uses probability × estimated opportunity margin as a heuristic, not booked revenue or a financial forecast.
-
-## Before commercial use
-
-Replace synthetic records with verified, timestamped data. Capture buyer-level history, quote response times, competitor pricing, actual freight, measured moisture and contamination, mill captive use, genuine surplus availability, payment/default history, and realised contribution margin. Validate on later time periods and unseen buyers before deployment.
+## Important limitations
+All supplied data are synthetic. Prediction probabilities are not guarantees. The Model Performance page scores the currently loaded labelled data and must not be presented as independent test performance if records overlap with training. Use an untouched chronological test period for final reporting. The application does not guarantee 95% accuracy.
