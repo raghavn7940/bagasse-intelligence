@@ -20,7 +20,7 @@ APP_DIR = Path(__file__).resolve().parent
 DATA_PATH = APP_DIR / "data" / "Sugarcane_Bagasse_Hyperparameter_Tuned.xlsx"
 MODEL_PATH = APP_DIR / "models" / "Sugarcane_Bagasse_Tuned_RF_Model.joblib"
 
-st.set_page_config(page_title="Bagasse Intelligence | Command Center",
+st.set_page_config(page_title="Bagasse Intelligence V2 | Command Center",
                    page_icon="🌾", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
@@ -65,7 +65,10 @@ def read_uploaded_or_default(upload):
         try:
             if upload.name.lower().endswith(".csv"):
                 return pd.read_csv(upload)
-            return pd.read_excel(upload, sheet_name="Clean_Quotes")
+            xls = pd.ExcelFile(upload)
+            preferred = "Clean_Quotes" if "Clean_Quotes" in xls.sheet_names else xls.sheet_names[0]
+            st.sidebar.caption(f"Reading worksheet: {preferred}")
+            return pd.read_excel(upload, sheet_name=preferred)
         except Exception as e:
             st.error(f"Could not read uploaded file: {e}")
             return None
@@ -123,7 +126,7 @@ st.sidebar.caption("Commercial analytics • ML prediction • supply decisions"
 page = st.sidebar.radio("NAVIGATION", [
     "Executive Overview", "Data Quality & Explorer", "Model Performance",
     "Hyperparameter Tuning", "Buyer Prediction", "Commercial Prioritisation",
-    "Supply & Market Insights", "How to Use"
+    "Supply & Market Insights", "EDA & Business Drivers", "How to Use"
 ])
 st.sidebar.divider()
 uploaded = st.sidebar.file_uploader("Replace dataset (CSV or XLSX)", type=["csv","xlsx"])
@@ -252,7 +255,12 @@ elif page == "Model Performance":
                                 title="Confusion matrix on currently loaded labelled records")
                 fig.update_layout(template="plotly_dark")
                 st.plotly_chart(fig, use_container_width=True)
-                st.warning("This is an in-sample diagnostic if you evaluate the same records used to train the packaged model. Do not report it as unbiased test performance. Use the Hyperparameter Tuning page for a chronological holdout.")
+                st.warning(
+                    "IMPORTANT: These metrics are calculated on the currently loaded labelled dataset. "
+                    "If these records overlap with model training, this is an in-sample diagnostic—not "
+                    "independent test accuracy. For academic reporting, use an untouched chronological "
+                    "holdout and disclose the split dates. Do not present this panel as validated performance."
+                )
         except Exception as e:
             st.error(f"Could not score this dataset with the loaded model: {e}")
 
@@ -286,11 +294,11 @@ elif page == "Hyperparameter Tuning":
     n_iter = st.slider("Randomized search iterations", 5, 40, 12)
     run = st.button("Run tuning and compare models", type="primary")
     if run:
-        with st.spinner("Training and tuning. This may take a few minutes..."):
+        with st.spinner("Training and tuning in stable single-process mode. This may take a few minutes..."):
             pre = make_preprocessor(X_train)
             candidates = {
-                "Random Forest": RandomForestClassifier(random_state=42,n_jobs=-1,class_weight="balanced"),
-                "Extra Trees": ExtraTreesClassifier(random_state=42,n_jobs=-1,class_weight="balanced"),
+                "Random Forest": RandomForestClassifier(random_state=42,n_jobs=1,class_weight="balanced"),
+                "Extra Trees": ExtraTreesClassifier(random_state=42,n_jobs=1,class_weight="balanced"),
                 "Gradient Boosting": GradientBoostingClassifier(random_state=42)
             }
             param_distributions = {
@@ -327,7 +335,7 @@ elif page == "Hyperparameter Tuning":
                 pipe = Pipeline([("preprocessor",pre),("model",estimator)])
                 search = RandomizedSearchCV(pipe,param_distributions[name],n_iter=n_iter,
                                             scoring=tune_metric,cv=cv.split(X_train,y_train,groups),
-                                            random_state=42,n_jobs=-1,refit=True,verbose=0)
+                                            random_state=42,n_jobs=1,refit=True,verbose=0)
                 search.fit(X_train,y_train)
                 best = search.best_estimator_
                 prob = best.predict_proba(X_test)[:,1]
@@ -379,23 +387,37 @@ elif page == "Buyer Prediction":
     with st.expander("Download a prediction template"):
         st.download_button("Download CSV template",template.to_csv(index=False).encode(),
                            "buyer_quote_template.csv","text/csv")
+    threshold=st.slider("Decision threshold",0.05,0.95,0.50,0.01,
+                        help="Affects the Yes/No decision, not the underlying probability.")
     pred_file=st.file_uploader("Upload new quotation records (CSV or XLSX)",type=["csv","xlsx"],key="predfile")
     if pred_file:
-        new = pd.read_csv(pred_file) if pred_file.name.lower().endswith(".csv") else pd.read_excel(pred_file)
-        Xnew=engineer_features(new,feat)
         try:
+            new = pd.read_csv(pred_file) if pred_file.name.lower().endswith(".csv") else pd.read_excel(pred_file)
+            missing = [c for c in feat if c not in new.columns]
+            if missing:
+                st.warning("Missing model input columns will be imputed by the saved pipeline: " + ", ".join(missing))
+            Xnew=engineer_features(new,feat)
             p=saved["pipeline"].predict_proba(Xnew)[:,1]
-            threshold=st.slider("Conversion probability threshold",0.05,0.95,0.50,0.01)
             out=new.copy()
             out["Conversion_Probability"]=p
             out["Predicted_Conversion"]=(p>=threshold).astype(int)
             out["Priority"]=pd.cut(p,[-0.001,0.35,0.65,1.001],labels=["Low","Medium","High"])
-            st.metric("High-priority records",int((out["Priority"]=="High").sum()))
+            if "Estimated_Gross_Margin_INR_per_Tonne" in out.columns and "Offered_Quantity_Tonnes" in out.columns:
+                q = pd.to_numeric(out["Offered_Quantity_Tonnes"],errors="coerce").fillna(0)
+                m = pd.to_numeric(out["Estimated_Gross_Margin_INR_per_Tonne"],errors="coerce").fillna(0)
+                out["Estimated_Opportunity_Margin_INR"] = q*m
+                out["Expected_Weighted_Margin_INR"] = p*out["Estimated_Opportunity_Margin_INR"]
+            a,b,c,d = st.columns(4)
+            a.metric("Quotations scored", f"{len(out):,}")
+            b.metric("Predicted conversions", int(out["Predicted_Conversion"].sum()))
+            c.metric("High-priority buyers", int((out["Priority"]=="High").sum()))
+            d.metric("Mean conversion probability", f"{p.mean():.1%}" if len(p) else "—")
+            st.caption("Probability is a model estimate. Threshold changes the binary decision only; it does not improve model quality.")
             st.dataframe(out.sort_values("Conversion_Probability",ascending=False),use_container_width=True)
             st.download_button("Download scored quotations",out.to_csv(index=False).encode(),
                                "scored_buyer_quotes.csv","text/csv")
         except Exception as e:
-            st.error(f"Prediction failed. Check that uploaded columns match the template. Details: {e}")
+            st.error(f"Prediction failed. Check the uploaded file and model compatibility. Details: {e}")
 
 elif page == "Commercial Prioritisation":
     render_hero("PROFIT-LED SELLING", "Commercial Prioritisation", "Rank opportunities using conversion probability and estimated per-tonne gross margin. Confirm costs before acting.")
@@ -410,8 +432,11 @@ elif page == "Commercial Prioritisation":
         prob=saved["pipeline"].predict_proba(Xp)[:,1]
         ranked=df.copy()
         ranked["Conversion_Probability"]=prob
+        if "Offered_Quantity_Tonnes" not in ranked.columns:
+            st.error("Offered_Quantity_Tonnes is missing; opportunity value cannot be calculated.")
+            st.stop()
         ranked["Estimated_Opportunity_Margin_INR"]=(
-            pd.to_numeric(ranked.get("Offered_Quantity_Tonnes",0),errors="coerce").fillna(0) *
+            pd.to_numeric(ranked["Offered_Quantity_Tonnes"],errors="coerce").fillna(0) *
             pd.to_numeric(ranked["Estimated_Gross_Margin_INR_per_Tonne"],errors="coerce").fillna(0)
         )
         ranked["Expected_Weighted_Margin_INR"]=ranked["Conversion_Probability"]*ranked["Estimated_Opportunity_Margin_INR"]
@@ -449,6 +474,68 @@ elif page == "Supply & Market Insights":
             fig.update_layout(template="plotly_dark",paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(0,0,0,0)")
             st.plotly_chart(fig,use_container_width=True)
     st.caption("These workbook analyses are synthetic and exploratory. Validate actual mill surplus, captive use, moisture and buyer offtake before making supply commitments.")
+
+
+elif page == "EDA & Business Drivers":
+    render_hero("EXPLORATORY ANALYTICS", "EDA & Business Drivers",
+                "Explore how quotation, buyer, quality and logistics variables relate to conversion. Associations are descriptive, not causal.")
+    if "Purchase_Converted" not in df:
+        st.error("Purchase_Converted is required for conversion analysis.")
+        st.stop()
+    target = pd.to_numeric(df["Purchase_Converted"], errors="coerce")
+    valid = df.loc[target.notna()].copy()
+    valid["Purchase_Converted"] = target.dropna().astype(int)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Rows analysed", f"{len(valid):,}")
+    c2.metric("Conversion rate", f"{valid['Purchase_Converted'].mean():.1%}")
+    c3.metric("Non-conversion rate", f"{1-valid['Purchase_Converted'].mean():.1%}")
+
+    cat_candidates = [c for c in ["Industry","Buyer_Region","Payment_Terms","Contract_Preference",
+                                  "Quality_Sensitivity","On_Time_Promise"] if c in valid.columns]
+    num_candidates = [c for c in ["Offered_Price_INR_per_Tonne","Estimated_Freight_INR_per_Tonne",
+                                  "Offered_Moisture_Pct","Contamination_Pct","Delivery_Distance_km",
+                                  "Buyer_Monthly_Demand_Tonnes","Offered_Quantity_Tonnes",
+                                  "Estimated_Gross_Margin_INR_per_Tonne"] if c in valid.columns]
+    left, right = st.columns(2)
+    with left:
+        if cat_candidates:
+            cat = st.selectbox("Compare conversion by category", cat_candidates)
+            agg = valid.groupby(cat, dropna=False)["Purchase_Converted"].agg(["mean","count"]).reset_index()
+            agg = agg.rename(columns={"mean":"Conversion_Rate","count":"Quotes"})
+            fig = px.bar(agg, x=cat, y="Conversion_Rate", text="Quotes",
+                         title=f"Conversion rate by {cat}", hover_data=["Quotes"])
+            fig.update_layout(template="plotly_dark", yaxis_tickformat=".0%",
+                              paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(agg.sort_values("Conversion_Rate",ascending=False),use_container_width=True,hide_index=True)
+    with right:
+        if num_candidates:
+            num = st.selectbox("Compare conversion across numeric variable", num_candidates)
+            temp = valid[[num,"Purchase_Converted"]].copy()
+            temp[num] = pd.to_numeric(temp[num], errors="coerce")
+            temp = temp.dropna()
+            if len(temp):
+                temp["Value_Band"] = pd.qcut(temp[num], q=min(5,temp[num].nunique()),
+                                             duplicates="drop")
+                agg = temp.groupby("Value_Band",observed=True)["Purchase_Converted"].agg(["mean","count"]).reset_index()
+                agg["Value_Band"] = agg["Value_Band"].astype(str)
+                agg = agg.rename(columns={"mean":"Conversion_Rate","count":"Quotes"})
+                fig = px.line(agg, x="Value_Band", y="Conversion_Rate", markers=True,
+                              title=f"Conversion by {num} band", hover_data=["Quotes"])
+                fig.update_layout(template="plotly_dark", yaxis_tickformat=".0%",
+                                  paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+                st.plotly_chart(fig, use_container_width=True)
+                st.dataframe(agg,use_container_width=True,hide_index=True)
+    numeric_df = valid.select_dtypes(include=np.number)
+    if numeric_df.shape[1] >= 2:
+        st.subheader("Correlation matrix")
+        corr = numeric_df.corr(numeric_only=True)
+        fig = px.imshow(corr, text_auto=".2f", color_continuous_scale="RdBu",
+                        zmin=-1, zmax=1, title="Pearson correlation among numeric fields")
+        fig.update_layout(template="plotly_dark")
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("Correlation measures linear association. It does not establish causation; ID-like and derived fields should be excluded before drawing substantive conclusions.")
+    st.info("Use these charts to generate hypotheses for further testing. Differences across categories may reflect confounding variables such as price, region, buyer history or supply conditions.")
 
 elif page == "How to Use":
     render_hero("GETTING STARTED", "How to Use This Application", "The project folder is self-contained. Install dependencies once, then launch the app locally.")
