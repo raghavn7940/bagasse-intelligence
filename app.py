@@ -17,7 +17,7 @@ from sklearn.metrics import (accuracy_score, precision_score, recall_score, f1_s
                              roc_auc_score, confusion_matrix, classification_report)
 
 APP_DIR = Path(__file__).resolve().parent
-DATA_PATH = APP_DIR / "data" / "Sugarcane_Bagasse_Hyperparameter_Tuned.xlsx"
+DATA_PATH = APP_DIR / "data" / "Sugarcane_Bagasse_Clean_Dataset.xlsx"
 MODEL_PATH = APP_DIR / "models" / "Sugarcane_Bagasse_Tuned_RF_Model.joblib"
 
 st.set_page_config(page_title="Bagasse Intelligence V2 | Command Center",
@@ -66,14 +66,14 @@ def read_uploaded_or_default(upload):
             if upload.name.lower().endswith(".csv"):
                 return pd.read_csv(upload)
             xls = pd.ExcelFile(upload)
-            preferred = "Clean_Quotes" if "Clean_Quotes" in xls.sheet_names else xls.sheet_names[0]
+            preferred = ("Quotes" if "Quotes" in xls.sheet_names else ("Clean_Quotes" if "Clean_Quotes" in xls.sheet_names else xls.sheet_names[0]))
             st.sidebar.caption(f"Reading worksheet: {preferred}")
             return pd.read_excel(upload, sheet_name=preferred)
         except Exception as e:
             st.error(f"Could not read uploaded file: {e}")
             return None
     if DATA_PATH.exists():
-        return read_sheet(str(DATA_PATH), "Clean_Quotes")
+        return read_sheet(str(DATA_PATH), "Quotes")
     return None
 
 def engineer_features(frame, feature_cols):
@@ -122,7 +122,7 @@ def fmt_pct(v):
     return "—" if pd.isna(v) else f"{v:.1%}"
 
 st.sidebar.markdown("## 🌾 BAGASSE INTELLIGENCE")
-st.sidebar.caption("Commercial analytics • ML prediction • supply decisions")
+st.sidebar.caption("Commercial analytics • descriptive & diagnostic EDA • decision support")
 page = st.sidebar.radio("NAVIGATION", [
     "Executive Overview", "Data Quality & Explorer", "Model Performance",
     "Hyperparameter Tuning", "Buyer Prediction", "Commercial Prioritisation",
@@ -208,6 +208,17 @@ elif page == "Data Quality & Explorer":
     c.metric("Missing cells", f"{bmiss:,}")
     dup = int(df.duplicated().sum())
     d.metric("Duplicate rows", f"{dup:,}")
+    if DATA_PATH.exists():
+        st.subheader("Workbook structure")
+        try:
+            book = pd.ExcelFile(DATA_PATH)
+            workbook_profile = []
+            for sheet_name in book.sheet_names:
+                sheet_df = pd.read_excel(DATA_PATH, sheet_name=sheet_name)
+                workbook_profile.append({"Worksheet":sheet_name,"Rows":len(sheet_df),"Columns":len(sheet_df.columns),"Missing cells":int(sheet_df.isna().sum().sum())})
+            st.dataframe(pd.DataFrame(workbook_profile), use_container_width=True, hide_index=True)
+        except Exception as e:
+            st.warning(f"Could not profile all workbook sheets: {e}")
     profile = pd.DataFrame({
         "Column":df.columns,
         "Type": [str(t) for t in df.dtypes],
@@ -230,7 +241,7 @@ elif page == "Data Quality & Explorer":
                        "loaded_dataset.csv", "text/csv")
 
 elif page == "Model Performance":
-    render_hero("MODEL EVALUATION", "Model Performance", "Review the packaged model and compare it with fresh training runs on a consistent holdout.")
+    render_hero("MODEL EVALUATION", "Model Performance", "Inspect the packaged model against the loaded labelled records. These scores are diagnostic only unless evaluated on an untouched holdout.")
     if saved is None:
         st.warning("No JOBLIB model loaded. The workbook can still be used for fresh training if it contains the target.")
     else:
@@ -456,86 +467,135 @@ elif page == "Commercial Prioritisation":
         st.error(f"Could not calculate prioritisation: {e}")
 
 elif page == "Supply & Market Insights":
-    render_hero("SUPPLY CHAIN LENS", "Supply & Market Insights", "Explore the workbook's mill, monthly supply, buyer segment, transaction and association-rule tabs.")
+    render_hero("SUPPLY CHAIN LENS", "Supply & Market Insights", "Explore mill capacity, monthly bagasse flows, buyer demand and generated transactions. All figures are synthetic scenario data.")
     if not DATA_PATH.exists():
         st.info("Supply insights require the supplied Excel workbook in the data folder.")
         st.stop()
-    book=pd.ExcelFile(DATA_PATH)
-    tabs=[t for t in ["Mills","Mill_Monthly","Buyers_Segmented","Transactions","Cluster_Profiles","Association_Rules","Regression_Metrics"] if t in book.sheet_names]
-    tab=st.selectbox("Choose a workbook analysis",tabs)
-    sheet=pd.read_excel(DATA_PATH,sheet_name=tab)
-    st.subheader(tab.replace("_"," "))
-    st.dataframe(sheet,use_container_width=True)
-    numeric=sheet.select_dtypes(include=np.number).columns.tolist()
+    book = pd.ExcelFile(DATA_PATH)
+    available = [t for t in ["Mills", "Mill_Monthly", "Buyers", "Transactions"] if t in book.sheet_names]
+    if "Mill_Monthly" in available:
+        mm = pd.read_excel(DATA_PATH, sheet_name="Mill_Monthly")
+        cols = [c for c in ["Bagasse_Generated_Wet_Tonnes", "Internal_Use_Wet_Tonnes", "Theoretical_Surplus_Wet_Tonnes", "Actual_External_Supply_Wet_Tonnes"] if c in mm]
+        if cols:
+            st.subheader("Cumulative generated supply profile")
+            totals = mm[cols].sum()
+            k = st.columns(len(cols))
+            labels = {"Bagasse_Generated_Wet_Tonnes":"Generated (wet tonnes)","Internal_Use_Wet_Tonnes":"Internal use","Theoretical_Surplus_Wet_Tonnes":"Theoretical surplus","Actual_External_Supply_Wet_Tonnes":"External supply"}
+            for c, col in zip(k, cols):
+                c.metric(labels.get(col,col), f"{totals[col]:,.0f}")
+            st.caption("Wet-tonne totals are not dry-matter equivalents. Moisture, storage loss, seasonality and mill captive requirements must be considered before treating theoretical surplus as saleable supply.")
+            if "Month" in mm:
+                mm["Month"] = pd.to_datetime(mm["Month"], errors="coerce")
+                monthly = mm.groupby(mm["Month"].dt.to_period("M"))[cols].sum().reset_index()
+                monthly["Month"] = monthly["Month"].astype(str)
+                long = monthly.melt(id_vars="Month", value_vars=cols, var_name="Flow", value_name="Wet_Tonnes")
+                long["Flow"] = long["Flow"].map(labels)
+                fig = px.line(long, x="Month", y="Wet_Tonnes", color="Flow", markers=True, title="Monthly bagasse flow (wet tonnes)")
+                fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+                st.plotly_chart(fig, use_container_width=True)
+    tab = st.selectbox("Explore workbook table", available)
+    sheet = pd.read_excel(DATA_PATH, sheet_name=tab)
+    st.subheader(tab.replace("_", " "))
+    st.write(f"{len(sheet):,} records · {len(sheet.columns)} columns")
+    st.dataframe(sheet, use_container_width=True, hide_index=True)
+    numeric = sheet.select_dtypes(include=np.number).columns.tolist()
     if numeric:
-        col=st.selectbox("Plot numeric field",numeric)
-        if len(sheet)>0:
-            fig=px.histogram(sheet,x=col,title=f"Distribution of {col}")
-            fig.update_layout(template="plotly_dark",paper_bgcolor="rgba(0,0,0,0)",plot_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(fig,use_container_width=True)
-    st.caption("These workbook analyses are synthetic and exploratory. Validate actual mill surplus, captive use, moisture and buyer offtake before making supply commitments.")
-
+        col = st.selectbox("Inspect numeric distribution", numeric, key="supply_numeric")
+        fig = px.histogram(sheet, x=col, nbins=30, title=f"Distribution of {col}")
+        fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+        st.plotly_chart(fig, use_container_width=True)
+    st.caption("These are synthetic operational scenarios, not verified mill supply commitments or observed market demand.")
 
 elif page == "EDA & Business Drivers":
-    render_hero("EXPLORATORY ANALYTICS", "EDA & Business Drivers",
-                "Explore how quotation, buyer, quality and logistics variables relate to conversion. Associations are descriptive, not causal.")
+    render_hero("INDIVIDUAL PROJECT CORE", "EDA & Business Drivers", "Descriptive and diagnostic analytics for the synthetic bagasse quotation pipeline. Every chart includes an interpretation prompt; associations are not proof of causation.")
     if "Purchase_Converted" not in df:
         st.error("Purchase_Converted is required for conversion analysis.")
         st.stop()
-    target = pd.to_numeric(df["Purchase_Converted"], errors="coerce")
-    valid = df.loc[target.notna()].copy()
-    valid["Purchase_Converted"] = target.dropna().astype(int)
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Rows analysed", f"{len(valid):,}")
-    c2.metric("Conversion rate", f"{valid['Purchase_Converted'].mean():.1%}")
-    c3.metric("Non-conversion rate", f"{1-valid['Purchase_Converted'].mean():.1%}")
-
-    cat_candidates = [c for c in ["Industry","Buyer_Region","Payment_Terms","Contract_Preference",
-                                  "Quality_Sensitivity","On_Time_Promise"] if c in valid.columns]
-    num_candidates = [c for c in ["Offered_Price_INR_per_Tonne","Estimated_Freight_INR_per_Tonne",
-                                  "Offered_Moisture_Pct","Contamination_Pct","Delivery_Distance_km",
-                                  "Buyer_Monthly_Demand_Tonnes","Offered_Quantity_Tonnes",
-                                  "Estimated_Gross_Margin_INR_per_Tonne"] if c in valid.columns]
-    left, right = st.columns(2)
-    with left:
-        if cat_candidates:
-            cat = st.selectbox("Compare conversion by category", cat_candidates)
-            agg = valid.groupby(cat, dropna=False)["Purchase_Converted"].agg(["mean","count"]).reset_index()
-            agg = agg.rename(columns={"mean":"Conversion_Rate","count":"Quotes"})
-            fig = px.bar(agg, x=cat, y="Conversion_Rate", text="Quotes",
-                         title=f"Conversion rate by {cat}", hover_data=["Quotes"])
-            fig.update_layout(template="plotly_dark", yaxis_tickformat=".0%",
-                              paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(agg.sort_values("Conversion_Rate",ascending=False),use_container_width=True,hide_index=True)
-    with right:
-        if num_candidates:
-            num = st.selectbox("Compare conversion across numeric variable", num_candidates)
-            temp = valid[[num,"Purchase_Converted"]].copy()
-            temp[num] = pd.to_numeric(temp[num], errors="coerce")
-            temp = temp.dropna()
-            if len(temp):
-                temp["Value_Band"] = pd.qcut(temp[num], q=min(5,temp[num].nunique()),
-                                             duplicates="drop")
-                agg = temp.groupby("Value_Band",observed=True)["Purchase_Converted"].agg(["mean","count"]).reset_index()
-                agg["Value_Band"] = agg["Value_Band"].astype(str)
-                agg = agg.rename(columns={"mean":"Conversion_Rate","count":"Quotes"})
-                fig = px.line(agg, x="Value_Band", y="Conversion_Rate", markers=True,
-                              title=f"Conversion by {num} band", hover_data=["Quotes"])
-                fig.update_layout(template="plotly_dark", yaxis_tickformat=".0%",
-                                  paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-                st.plotly_chart(fig, use_container_width=True)
-                st.dataframe(agg,use_container_width=True,hide_index=True)
-    numeric_df = valid.select_dtypes(include=np.number)
-    if numeric_df.shape[1] >= 2:
-        st.subheader("Correlation matrix")
-        corr = numeric_df.corr(numeric_only=True)
-        fig = px.imshow(corr, text_auto=".2f", color_continuous_scale="RdBu",
-                        zmin=-1, zmax=1, title="Pearson correlation among numeric fields")
-        fig.update_layout(template="plotly_dark")
+    valid = df.copy()
+    valid["Purchase_Converted"] = pd.to_numeric(valid["Purchase_Converted"], errors="coerce")
+    valid = valid.dropna(subset=["Purchase_Converted"])
+    valid["Purchase_Converted"] = valid["Purchase_Converted"].astype(int)
+    if "Month" in valid:
+        valid["Month"] = pd.to_datetime(valid["Month"], errors="coerce")
+    rate = valid["Purchase_Converted"].mean()
+    a,b,c,d = st.columns(4)
+    a.metric("Quotes analysed", f"{len(valid):,}")
+    b.metric("Conversion rate", f"{rate:.1%}")
+    c.metric("Converted", f"{int(valid.Purchase_Converted.sum()):,}")
+    d.metric("Not converted", f"{int((1-valid.Purchase_Converted).sum()):,}")
+    st.markdown("### 1. Conversion trend over time")
+    if "Month" in valid and valid["Month"].notna().any():
+        trend = valid.dropna(subset=["Month"]).groupby(valid.dropna(subset=["Month"])["Month"].dt.to_period("M"))["Purchase_Converted"].agg(["mean","count"]).reset_index()
+        trend["Month"] = trend["Month"].astype(str)
+        fig = px.line(trend, x="Month", y="mean", markers=True, hover_data={"count":True}, title="Monthly quotation conversion rate")
+        fig.update_layout(template="plotly_dark", yaxis_tickformat=".0%", yaxis_title="Conversion rate", xaxis_title="Quote month", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(fig, use_container_width=True)
-        st.caption("Correlation measures linear association. It does not establish causation; ID-like and derived fields should be excluded before drawing substantive conclusions.")
-    st.info("Use these charts to generate hypotheses for further testing. Differences across categories may reflect confounding variables such as price, region, buyer history or supply conditions.")
+        st.caption("Interpretation: look for sustained changes rather than one-month spikes. This synthetic dataset spans multiple years; a trend does not establish why conversion changed.")
+    st.markdown("### 2. Categorical comparisons")
+    cat_candidates = [c for c in ["Industry","Buyer_Region","Quality_Sensitivity","Contract_Preference","On_Time_Promise"] if c in valid]
+    if cat_candidates:
+        cat = st.selectbox("Select a category", cat_candidates, key="eda_category")
+        agg = valid.groupby(cat, dropna=False)["Purchase_Converted"].agg(Conversion_Rate="mean", Quotes="count").reset_index().sort_values("Conversion_Rate", ascending=False)
+        fig = px.bar(agg, x=cat, y="Conversion_Rate", text=agg["Conversion_Rate"].map(lambda x:f"{x:.1%}"), hover_data=["Quotes"], title=f"Conversion rate by {cat}")
+        fig.update_layout(template="plotly_dark", yaxis_tickformat=".0%", yaxis_title="Conversion rate", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+        st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(agg.style.format({"Conversion_Rate":"{:.1%}"}), use_container_width=True, hide_index=True)
+        if len(agg) >= 2:
+            st.info(f"Reading the chart: the highest observed category is **{agg.iloc[0][cat]}** ({agg.iloc[0]['Conversion_Rate']:.1%}; n={int(agg.iloc[0]['Quotes']):,}); the lowest is **{agg.iloc[-1][cat]}** ({agg.iloc[-1]['Conversion_Rate']:.1%}; n={int(agg.iloc[-1]['Quotes']):,}). These are descriptive differences in generated records, not causal effects.")
+    st.markdown("### 3. Numeric drivers")
+    num_candidates = [c for c in ["Offered_Price_INR_per_Tonne","Estimated_Freight_INR_per_Tonne","Offered_Moisture_Pct","Contamination_Pct","Delivery_Distance_km","Buyer_Monthly_Demand_Tonnes","Offered_Quantity_Tonnes","Estimated_Gross_Margin_INR_per_Tonne","Payment_Term_Days"] if c in valid]
+    if num_candidates:
+        num = st.selectbox("Select a numeric variable", num_candidates, key="eda_numeric")
+        tmp = valid[[num,"Purchase_Converted"]].copy()
+        tmp[num] = pd.to_numeric(tmp[num], errors="coerce")
+        tmp = tmp.dropna()
+        try:
+            tmp["Value_Band"] = pd.qcut(tmp[num], q=min(5, tmp[num].nunique()), duplicates="drop")
+            bands = tmp.groupby("Value_Band", observed=True)["Purchase_Converted"].agg(Conversion_Rate="mean", Quotes="count").reset_index()
+            bands["Value_Band"] = bands["Value_Band"].astype(str)
+            fig = px.bar(bands, x="Value_Band", y="Conversion_Rate", text=bands["Conversion_Rate"].map(lambda x:f"{x:.1%}"), hover_data=["Quotes"], title=f"Conversion across {num} quintiles")
+            fig.update_layout(template="plotly_dark", yaxis_tickformat=".0%", xaxis_title=f"{num} bands (low to high)", yaxis_title="Conversion rate", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(bands.style.format({"Conversion_Rate":"{:.1%}"}), use_container_width=True, hide_index=True)
+            st.caption("Interpretation: quintiles divide quotations into five similarly sized groups. Compare direction and size of differences; do not assume a linear relationship.")
+        except Exception:
+            st.warning("This variable does not have enough distinct numeric values to form quintiles.")
+    st.markdown("### 4. Correlation analysis")
+    numeric_cols = valid.select_dtypes(include=np.number).columns.tolist()
+    excluded = [c for c in numeric_cols if c.lower().endswith("_id") or c in ["Purchase_Converted"]]
+    corr_cols = [c for c in numeric_cols if c not in excluded]
+    if len(corr_cols) >= 2:
+        corr = valid[corr_cols].corr(numeric_only=True)
+        fig = px.imshow(corr, text_auto=".2f", color_continuous_scale="RdBu", zmin=-1, zmax=1, title="Pearson correlation matrix (numeric business variables)")
+        fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)")
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("Pearson r ranges from -1 to +1. Positive values move together; negative values move in opposite directions. Correlation is not causation. Identifier columns are excluded.")
+        if "Purchase_Converted" in numeric_cols:
+            target_corr = valid[numeric_cols].corr(numeric_only=True)["Purchase_Converted"].drop("Purchase_Converted").sort_values(key=lambda x:x.abs(), ascending=False)
+            target_corr_df = target_corr.rename("Pearson_r_with_conversion").reset_index().rename(columns={"index":"Variable"})
+            st.subheader("Correlation with conversion outcome")
+            st.dataframe(target_corr_df.style.format({"Pearson_r_with_conversion":"{:.3f}"}), use_container_width=True, hide_index=True)
+    st.markdown("### 5. Data-led observations for discussion")
+    observations=[]
+    if "On_Time_Promise" in valid:
+        ontime=valid.groupby("On_Time_Promise").Purchase_Converted.mean()
+        if len(ontime)>=2:
+            observations.append(f"Quotes with an on-time promise show {ontime.max():.1%} conversion versus {ontime.min():.1%} for the other promise group. This is an association in the synthetic data.")
+    if "Offered_Price_INR_per_Tonne" in valid:
+        bands=pd.qcut(valid["Offered_Price_INR_per_Tonne"],5,duplicates="drop")
+        rates=valid.groupby(bands,observed=True).Purchase_Converted.mean()
+        if len(rates)>=2:
+            observations.append(f"Conversion ranges from {rates.max():.1%} in the best-performing price band to {rates.min():.1%} in the weakest price band. Check buyer mix and product quality before interpreting this as price sensitivity.")
+    if "Contamination_Pct" in valid:
+        bands=pd.qcut(valid["Contamination_Pct"],5,duplicates="drop")
+        rates=valid.groupby(bands,observed=True).Purchase_Converted.mean()
+        if len(rates)>=2:
+            observations.append(f"The observed conversion range across contamination bands is {rates.max():.1%} to {rates.min():.1%}. This may support a quality-fit hypothesis, not a causal claim.")
+    for item in observations:
+        st.write("• " + item)
+    st.warning("Academic interpretation note: all records and outcomes in this workbook are synthetic. These insights demonstrate the analytical method; they are not evidence of actual Indian bagasse-market behaviour. The generated target also has a documented label-noise limitation.")
+    summary = pd.DataFrame({"Metric":["Rows analysed","Conversion rate","Converted quotations","Not converted quotations"],"Value":[len(valid),rate,int(valid.Purchase_Converted.sum()),int((1-valid.Purchase_Converted).sum())]})
+    st.download_button("Download EDA summary CSV", summary.to_csv(index=False).encode("utf-8"), "eda_summary.csv", "text/csv")
 
 elif page == "How to Use":
     render_hero("GETTING STARTED", "How to Use This Application", "The project folder is self-contained. Install dependencies once, then launch the app locally.")
